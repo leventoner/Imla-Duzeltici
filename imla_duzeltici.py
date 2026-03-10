@@ -135,25 +135,59 @@ class NotificationOverlay:
 def show_notification(title, message, color='#3498db'):
     NotificationOverlay(title, message, color)
 
+def check_lib_health():
+    try:
+        return Normalizer.deasciify("kiymetli") == "kıymetli"
+    except:
+        return False
+
 def deasciify_text(text):
     if not text:
         return text
     try:
-        # Try full text first
+        # 1. Full text deasciify
         corrected = Normalizer.deasciify(text)
         
-        # If no change detected, try word by word (sometimes more effective for short/dense ASCII)
-        if corrected == text:
-            words = text.split(' ')
-            corrected_words = []
-            for word in words:
-                if word:
-                    # Basic check: if word has only ascii but no turkish
-                    corrected_words.append(Normalizer.deasciify(word))
-                else:
-                    corrected_words.append('')
-            corrected = ' '.join(corrected_words)
+        # 2. Word-by-word fallback (sometimes more reliable for mixed texts)
+        # Use regex or split() to handle all whitespace types
+        words = text.split()
+        if not words: return corrected
+        
+        corrected_words = [Normalizer.deasciify(w) for w in words]
+        
+        # We need to preserve original spacing if possible, but for comparison:
+        # if the word-by-word produced a different result than full-text, 
+        # it might be better. 
+        # However, Normalizer usually does a good job. 
+        # Let's check if the current 'corrected' still has 'kiymetli' or 'umarim'
+        
+        problematic_words = ["kiymetli", "umarim", "basarilar", "gormek"]
+        for p in problematic_words:
+            if p in corrected and p not in text: # This shouldn't happen, but logic check
+                pass
+            if p in text and p in corrected:
+                # Full text failed to catch this word, try word-by-word results
+                # Simple replacement for better accuracy
+                for i, w in enumerate(words):
+                    if w in problematic_words or any(c in "cgiosu" for c in w.lower()):
+                         # This is a bit complex, let's just return the best version we found
+                         pass
+        
+        # Simplest: if word by word changed something that full text didn't, or vice-versa
+        # Let's just return the most 'turkish' looking one (more non-ascii chars)
+        def count_turkish(s):
+            return sum(1 for c in s if c in "çğıöşüÇĞİÖŞÜ")
             
+        if count_turkish(corrected) < count_turkish(' '.join(corrected_words)):
+            # Reconstruct with original spacing is hard with simple split, 
+            # but let's try a better approach:
+            new_text = text
+            for i, w in enumerate(words):
+                cw = corrected_words[i]
+                if cw != w:
+                    new_text = new_text.replace(w, cw, 1)
+            corrected = new_text
+
         return corrected
     except Exception as e:
         print(f"Deasciify error: {e}")
@@ -184,13 +218,13 @@ def improve_text(text):
             continue
     return f"Hata: {last_error}"
 
-def handle_fix_clipboard():
-    # 1. Force a copy of selected text (simulating Ctrl+C)
-    # This is important because the user's manual Ctrl+C might still be in progress
-    keyboard.press_and_release('ctrl+c')
-    time.sleep(0.4) # Wait for OS to put text in clipboard
 
-    # 2. Try to get text from clipboard with retries
+def handle_fix_clipboard():
+    # If the hotkey is ctrl+c, the user's clicks already put the text in the clipboard
+    # We just need to wait a tiny bit to make sure OS finished the write
+    time.sleep(0.3)
+    
+    # Try to get text from clipboard with retries
     text = ""
     for i in range(10):
         try:
@@ -212,11 +246,15 @@ def handle_fix_clipboard():
         show_notification("Karakterler Düzeltildi!", corrected, color='#2ecc71')
     else:
         if settings.get("notify_on_no_change", True):
+            # Double check: maybe it's the case where Normalizer failed to load inside EXE
             show_notification("Düzeltme Gerekmedi", "Metin zaten düzgün görünüyor.", color='#3498db')
 
 def handle_improve_clipboard():
-    keyboard.press_and_release('ctrl+c')
-    time.sleep(0.4)
+    # If hotkey is ctrl+c, we don't send it again
+    if settings['hotkey'].lower() != 'ctrl+c':
+        keyboard.press_and_release('ctrl+c')
+    
+    time.sleep(0.3)
     
     text = ""
     for i in range(10):
@@ -314,9 +352,13 @@ if __name__ == "__main__":
     # Start keyboard listener
     threading.Thread(target=start_listener, daemon=True).start()
 
-    # Initial notification
+    # Initial notification and library health check
     msg = f"Uygulama hazır!\n2x {settings['hotkey'].upper()}: Düzelt\n3x {settings['hotkey'].upper()}: İyileştir"
-    show_notification("İmla Düzeltici v2.1", msg)
+    if not check_lib_health():
+        msg += "\n\n⚠️ KRİTİK: Dil kütüphanesi yüklenemedi!"
+        show_notification("İmla Düzeltici v2.2 - HATA", msg, color='#e67e22')
+    else:
+        show_notification("İmla Düzeltici v2.2", msg)
 
     # Start tray
     setup_tray()
