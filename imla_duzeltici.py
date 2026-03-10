@@ -136,8 +136,25 @@ def show_notification(title, message, color='#3498db'):
     NotificationOverlay(title, message, color)
 
 def deasciify_text(text):
+    if not text:
+        return text
     try:
-        return Normalizer.deasciify(text)
+        # Try full text first
+        corrected = Normalizer.deasciify(text)
+        
+        # If no change detected, try word by word (sometimes more effective for short/dense ASCII)
+        if corrected == text:
+            words = text.split(' ')
+            corrected_words = []
+            for word in words:
+                if word:
+                    # Basic check: if word has only ascii but no turkish
+                    corrected_words.append(Normalizer.deasciify(word))
+                else:
+                    corrected_words.append('')
+            corrected = ' '.join(corrected_words)
+            
+        return corrected
     except Exception as e:
         print(f"Deasciify error: {e}")
         return text
@@ -168,17 +185,29 @@ def improve_text(text):
     return f"Hata: {last_error}"
 
 def handle_fix_clipboard():
-    text = pyperclip.paste()
+    # Retry logic for clipboard access
+    text = ""
+    for _ in range(5):
+        try:
+            text = pyperclip.paste()
+            if text: break
+        except:
+            pass
+        time.sleep(0.1)
+
     if not text or not text.strip():
-        show_notification("Hata", "Pano boş veya metin içermiyor.", color='#e74c3c')
+        show_notification("Hata", "Pano boş veya metin okunamadı.", color='#e74c3c')
         return
     
     corrected = deasciify_text(text)
-    if text != corrected:
+    
+    # Also try the word-by-word if string comparison is subtle (e.g. whitespace)
+    if text.strip() != corrected.strip():
         pyperclip.copy(corrected)
         show_notification("Karakterler Düzeltildi!", corrected, color='#2ecc71')
-    elif settings.get("notify_on_no_change", True):
-        show_notification("Bilgi", "Metin zaten düzgün görünüyor.", color='#3498db')
+    else:
+        if settings.get("notify_on_no_change", True):
+            show_notification("Bilgi", "Değişiklik tespit edilemedi.\nMetin zaten düzgün olabilir.", color='#3498db')
 
 def handle_improve_clipboard():
     text = pyperclip.paste()
