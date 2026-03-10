@@ -25,7 +25,7 @@ Aşağıdaki komut, tüm bağımlılıkları ve veri dosyalarını tek bir EXE d
 
 // turbo
 ```powershell
-pyinstaller --noconsole --onefile --add-data "icon.png;." --add-data ".env;." --icon="icon.ico" --collect-all zeyrek --collect-all mintlemon-turkish-nlp --collect-all google.generativeai --name "imla_duzeltici" imla_duzeltici.py
+pyinstaller --noconsole --onefile --add-data "icon.png;." --add-data ".env;." --add-data "settings.json;." --icon="icon.ico" --collect-all zeyrek --collect-all mintlemon-turkish-nlp --collect-all google.generativeai --name "imla_duzeltici" imla_duzeltici.py
 ```
 
 3. **Sonuç**:

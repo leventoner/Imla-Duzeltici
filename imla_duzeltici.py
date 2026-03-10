@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import threading
+import json
 import keyboard
 import pyperclip
 from mintlemon import Normalizer
@@ -13,10 +14,28 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Settings logic
+DEFAULT_SETTINGS = {
+    "hotkey": "ctrl+c",
+    "cooldown": 0.5,
+    "notify_on_no_change": True
+}
+
+def load_settings():
+    try:
+        if os.path.exists("settings.json"):
+            with open("settings.json", "r", encoding="utf-8") as f:
+                return {**DEFAULT_SETTINGS, **json.load(f)}
+    except Exception as e:
+        print(f"Error loading settings: {e}")
+    return DEFAULT_SETTINGS
+
+settings = load_settings()
+
 # Global variables
 click_count = 0
 last_click_time = 0
-COOLDOWN = 0.5 # Window for double/triple click
+COOLDOWN = settings["cooldown"]
 is_running = True
 processing_lock = threading.Lock()
 timer = None
@@ -30,15 +49,8 @@ def initialize_gemini():
         print("GEMINI_API_KEY not found in environment.")
         return None
     
-    # Use absolute path for debug file
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    debug_path = os.path.join(current_dir, "debug_models.txt")
-    
     try:
-        # Use v1 for EEA/Belgium stability
         genai.configure(api_key=GEMINI_API_KEY)
-        
-        # Try to find what's actually available
         available_names = []
         try:
             available_models = list(genai.list_models())
@@ -46,38 +58,21 @@ def initialize_gemini():
         except Exception as list_err:
             print(f"Model listeleme hatası: {list_err}")
 
-        # Preferred models (Belgium/EEA appears to have 2.0 and 2.5 flash models)
         preferred_keywords = ['gemini-2.0-flash', 'gemini-2.1-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-pro']
-        
         for kw in preferred_keywords:
             for full_name in available_names:
                 if kw in full_name:
-                    try:
-                        print(f"Model basariyla secildi: {full_name}")
-                        return genai.GenerativeModel(full_name)
-                    except Exception as mod_err:
-                        print(f"Model {full_name} baslatilamadi: {mod_err}")
-                        continue
+                    return genai.GenerativeModel(full_name)
         
-        # If no list match, try standard names one more time
         for fallback in ['gemini-1.5-flash', 'gemini-pro']:
             try:
                 return genai.GenerativeModel(f"models/{fallback}")
             except:
                 continue
-                
         return None
-        
     except Exception as e:
         print(f"Gemini kritik hata: {e}")
         return None
-
-# Simple wrapper to check if model is valid before calling
-def get_model():
-    global model
-    if model is None:
-        model = initialize_gemini()
-    return model
 
 model = initialize_gemini()
 
@@ -104,35 +99,18 @@ class NotificationOverlay:
         overlay.overrideredirect(True)
         overlay.attributes("-topmost", True)
         overlay.attributes("-alpha", 0.0)
-        
         overlay.configure(bg='#2c3e50', highlightbackground=self.color, highlightthickness=2)
         
         frame = tk.Frame(overlay, bg='#2c3e50', padx=15, pady=10)
         frame.pack()
 
-        title_label = tk.Label(
-            frame, 
-            text=self.title, 
-            fg=self.color, 
-            bg='#2c3e50',
-            font=('Segoe UI', 10, 'bold')
-        )
-        title_label.pack(anchor='w')
+        tk.Label(frame, text=self.title, fg=self.color, bg='#2c3e50', font=('Segoe UI', 10, 'bold')).pack(anchor='w')
 
         display_msg = self.message
-        if len(display_msg) > 100:
-            display_msg = display_msg[:97] + "..."
+        if len(display_msg) > 120:
+            display_msg = display_msg[:117] + "..."
             
-        msg_label = tk.Label(
-            frame, 
-            text=display_msg, 
-            fg='white', 
-            bg='#2c3e50',
-            font=('Segoe UI', 9),
-            wraplength=300,
-            justify='left'
-        )
-        msg_label.pack(anchor='w', pady=(2, 0))
+        tk.Label(frame, text=display_msg, fg='white', bg='#2c3e50', font=('Segoe UI', 9), wraplength=400, justify='left').pack(anchor='w', pady=(2, 0))
 
         overlay.update_idletasks()
         width = overlay.winfo_width()
@@ -151,7 +129,7 @@ class NotificationOverlay:
                 overlay.after(30, fade_in)
         
         fade_in()
-        overlay.after(5000, root.destroy)
+        overlay.after(4000, root.destroy)
         root.mainloop()
 
 def show_notification(title, message, color='#3498db'):
@@ -165,17 +143,13 @@ def deasciify_text(text):
         return text
 
 def improve_text(text):
-    # Get all available models to try if one fails
-    available_model_names = []
     try:
         available_models = list(genai.list_models())
         available_model_names = [m.name for m in available_models if 'generateContent' in m.supported_generation_methods]
     except:
         available_model_names = ['models/gemini-2.0-flash', 'models/gemini-1.5-flash', 'models/gemini-pro']
 
-    # Current prioritized list based on your region
     prioritized = ['models/gemini-2.0-flash', 'models/gemini-2.5-flash', 'models/gemini-1.5-flash', 'models/gemini-pro']
-    # Add any other available models that aren't in our priority list
     for m in available_model_names:
         if m not in prioritized:
             prioritized.append(m)
@@ -190,71 +164,64 @@ def improve_text(text):
         except Exception as e:
             error_msg = str(e)
             last_error = error_msg
-            if "429" in error_msg:
-                print(f"Model {model_name} kota hatası verdi (429), bir sonraki deneniyor...")
-                continue
-            elif "404" in error_msg:
-                continue
-            else:
-                print(f"Model {model_name} hata verdi: {error_msg}")
-                continue
+            continue
+    return f"Hata: {last_error}"
+
+def handle_fix_clipboard():
+    text = pyperclip.paste()
+    if not text or not text.strip():
+        show_notification("Hata", "Pano boş veya metin içermiyor.", color='#e74c3c')
+        return
     
-    return f"Hata: Üzgünüm, şu an tüm modeller kota veya erişim hatası veriyor. (Son hata: {last_error})"
+    corrected = deasciify_text(text)
+    if text != corrected:
+        pyperclip.copy(corrected)
+        show_notification("Karakterler Düzeltildi!", corrected, color='#2ecc71')
+    elif settings.get("notify_on_no_change", True):
+        show_notification("Bilgi", "Metin zaten düzgün görünüyor.", color='#3498db')
+
+def handle_improve_clipboard():
+    text = pyperclip.paste()
+    if not text or not text.strip():
+        show_notification("Hata", "Pano boş veya metin içermiyor.", color='#e74c3c')
+        return
+    
+    show_notification("İşleniyor...", "Metin yapay zeka ile iyileştiriliyor...", color='#9b59b6')
+    improved = improve_text(text)
+    
+    if improved and not improved.startswith("Hata:"):
+        pyperclip.copy(improved)
+        show_notification("Yazı İyileştirildi!", improved, color='#9b59b6')
+    else:
+        show_notification("İşlem Başarısız", improved, color='#e74c3c')
 
 def process_action():
     global click_count
     current_clicks = click_count
-    click_count = 0 # Reset immediately
+    click_count = 0
     
-    if not is_running:
-        return
+    if not is_running: return
 
     # Wait a moment for the system to handle the copy action
-    time.sleep(0.2)
-    original_text = pyperclip.paste()
+    time.sleep(0.3)
     
-    if not original_text or not original_text.strip():
-        return
-
     if current_clicks == 2:
-        # Türkçe karakter düzeltme
-        corrected = deasciify_text(original_text)
-        if original_text != corrected:
-            pyperclip.copy(corrected)
-            show_notification("Karakterler Düzeltildi!", corrected, color='#2ecc71')
-    
+        handle_fix_clipboard()
     elif current_clicks >= 3:
-        # Metin iyileştirme (Improve)
-        show_notification("İşleniyor...", "Metin yapay zeka ile iyileştiriliyor...", color='#9b59b6')
-        improved = improve_text(original_text)
-        
-        if improved and not improved.startswith("ERROR") and not improved.startswith("Hata:"):
-            pyperclip.copy(improved)
-            show_notification("Yazı İyileştirildi!", improved, color='#9b59b6')
-        else:
-            show_notification("İşlem Başarısız", improved, color='#e74c3c')
+        handle_improve_clipboard()
 
-def on_ctrl_c():
+def on_hotkey_pressed():
     global click_count, timer, last_click_time
-    
-    if not is_running:
-        return
+    if not is_running: return
         
     current_time = time.time()
-    
-    # Check if this click is part of a sequence
     if current_time - last_click_time < COOLDOWN:
         click_count += 1
     else:
         click_count = 1
     
     last_click_time = current_time
-    
-    # Cancel previous timer if exists
-    if timer:
-        timer.cancel()
-    
-    # Set a timer to wait for more clicks
+    if timer: timer.cancel()
     timer = threading.Timer(COOLDOWN, process_action)
     timer.start()
 
@@ -267,9 +234,14 @@ def quit_app(icon, item):
 def setup_tray():
     image = Image.open(resource_path("icon.png"))
     menu = pystray.Menu(
-        pystray.MenuItem("İmla Düzeltici Durumu:", lambda: None, enabled=False),
-        pystray.MenuItem("  2x Ctrl+C: Karakter Düzelt", lambda: None, enabled=False),
-        pystray.MenuItem("  3x Ctrl+C: Metni İyileştir", lambda: None, enabled=False),
+        pystray.MenuItem("İmla Düzeltici Durumu", lambda: None, enabled=False),
+        pystray.MenuItem("---", lambda: None, enabled=False),
+        pystray.MenuItem("Panoyu Düzelt (Karakter)", handle_fix_clipboard),
+        pystray.MenuItem("Panoyu İyileştir (Yapay Zeka)", handle_improve_clipboard),
+        pystray.MenuItem("---", lambda: None, enabled=False),
+        pystray.MenuItem(f"Kısayol: {settings['hotkey'].upper()}", lambda: None, enabled=False),
+        pystray.MenuItem(f"  2x {settings['hotkey'].upper()}: Karakter", lambda: None, enabled=False),
+        pystray.MenuItem(f"  3x {settings['hotkey'].upper()}: İyileştir", lambda: None, enabled=False),
         pystray.MenuItem("---", lambda: None, enabled=False),
         pystray.MenuItem("Çıkış", quit_app)
     )
@@ -277,18 +249,29 @@ def setup_tray():
     icon.run()
 
 def start_listener():
-    # Use suppress=False to allow Ctrl+C to still perform normal copy
-    keyboard.add_hotkey('ctrl+c', on_ctrl_c)
-    while is_running:
-        time.sleep(1)
+    try:
+        keyboard.add_hotkey(settings['hotkey'], on_hotkey_pressed, suppress=False)
+        while is_running:
+            time.sleep(1)
+    except Exception as e:
+        print(f"Hotkey error: {e}")
 
 if __name__ == "__main__":
+    # Command line arguments handling
+    if len(sys.argv) > 1:
+        if "--fix" in sys.argv:
+            handle_fix_clipboard()
+            sys.exit(0)
+        elif "--improve" in sys.argv:
+            handle_improve_clipboard()
+            sys.exit(0)
+
     # Start keyboard listener
     threading.Thread(target=start_listener, daemon=True).start()
 
     # Initial notification
-    msg = "Uygulama çalışıyor!\n2x Ctrl+C: Karakter\n3x Ctrl+C: İyileştir"
-    show_notification("İmla Düzeltici v2.0", msg)
+    msg = f"Uygulama hazır!\n2x {settings['hotkey'].upper()}: Düzelt\n3x {settings['hotkey'].upper()}: İyileştir"
+    show_notification("İmla Düzeltici v2.1", msg)
 
     # Start tray
     setup_tray()

@@ -1,0 +1,5 @@
+{
+    "hotkey": "ctrl+c",
+    "cooldown": 0.5,
+    "notify_on_no_change": true
+}
