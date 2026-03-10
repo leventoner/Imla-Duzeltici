@@ -185,34 +185,50 @@ def improve_text(text):
     return f"Hata: {last_error}"
 
 def handle_fix_clipboard():
-    # Retry logic for clipboard access
+    # 1. Force a copy of selected text (simulating Ctrl+C)
+    # This is important because the user's manual Ctrl+C might still be in progress
+    keyboard.press_and_release('ctrl+c')
+    time.sleep(0.4) # Wait for OS to put text in clipboard
+
+    # 2. Try to get text from clipboard with retries
     text = ""
-    for _ in range(5):
+    for i in range(10):
         try:
             text = pyperclip.paste()
-            if text: break
+            if text and len(text.strip()) > 0: 
+                break
         except:
             pass
         time.sleep(0.1)
 
     if not text or not text.strip():
-        show_notification("Hata", "Pano boş veya metin okunamadı.", color='#e74c3c')
+        show_notification("Hata", "Lütfen metni seçin ve tekrar deneyin.", color='#e74c3c')
         return
     
     corrected = deasciify_text(text)
     
-    # Also try the word-by-word if string comparison is subtle (e.g. whitespace)
     if text.strip() != corrected.strip():
         pyperclip.copy(corrected)
         show_notification("Karakterler Düzeltildi!", corrected, color='#2ecc71')
     else:
         if settings.get("notify_on_no_change", True):
-            show_notification("Bilgi", "Değişiklik tespit edilemedi.\nMetin zaten düzgün olabilir.", color='#3498db')
+            show_notification("Düzeltme Gerekmedi", "Metin zaten düzgün görünüyor.", color='#3498db')
 
 def handle_improve_clipboard():
-    text = pyperclip.paste()
+    keyboard.press_and_release('ctrl+c')
+    time.sleep(0.4)
+    
+    text = ""
+    for i in range(10):
+        try:
+            text = pyperclip.paste()
+            if text and len(text.strip()) > 0: break
+        except:
+            pass
+        time.sleep(0.1)
+
     if not text or not text.strip():
-        show_notification("Hata", "Pano boş veya metin içermiyor.", color='#e74c3c')
+        show_notification("Hata", "Lütfen metni seçin ve tekrar deneyin.", color='#e74c3c')
         return
     
     show_notification("İşleniyor...", "Metin yapay zeka ile iyileştiriliyor...", color='#9b59b6')
