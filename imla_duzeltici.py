@@ -193,7 +193,7 @@ def deasciify_text(text):
         print(f"Deasciify error: {e}")
         return text
 
-def improve_text(text):
+def improve_text(text, auto_detect=False):
     try:
         available_models = list(genai.list_models())
         available_model_names = [m.name for m in available_models if 'generateContent' in m.supported_generation_methods]
@@ -209,7 +209,11 @@ def improve_text(text):
     for model_name in prioritized:
         try:
             current_model = genai.GenerativeModel(model_name)
-            prompt = f"Aşağıdaki Türkçe metni dilbilgisi, imla, kelime sırası ve genel akıcılık açısından iyileştir. Sadece düzeltilmiş metni döndür, başka hiçbir şey yazma. Metin: {text}"
+            if auto_detect:
+                prompt = f"Improve the grammar, spelling, word order, and general flow of the following text in its original language. Return only the corrected text, do not add any explanations or comments. Text: {text}"
+            else:
+                prompt = f"Aşağıdaki Türkçe metni dilbilgisi, imla, kelime sırası ve genel akıcılık açısından iyileştir. Sadece düzeltilmiş metni döndür, başka hiçbir şey yazma. Metin: {text}"
+            
             response = current_model.generate_content(prompt)
             return response.text.strip()
         except Exception as e:
@@ -249,7 +253,7 @@ def handle_fix_clipboard():
             # Double check: maybe it's the case where Normalizer failed to load inside EXE
             show_notification("Düzeltme Gerekmedi", "Metin zaten düzgün görünüyor.", color='#3498db')
 
-def handle_improve_clipboard():
+def handle_improve_clipboard(auto_detect=False):
     # If hotkey is ctrl+c, we don't send it again
     if settings['hotkey'].lower() != 'ctrl+c':
         keyboard.press_and_release('ctrl+c')
@@ -269,12 +273,14 @@ def handle_improve_clipboard():
         show_notification("Hata", "Lütfen metni seçin ve tekrar deneyin.", color='#e74c3c')
         return
     
-    show_notification("İşleniyor...", "Metin yapay zeka ile iyileştiriliyor...", color='#9b59b6')
-    improved = improve_text(text)
+    status_msg = "Metin kendi dilinde iyileştiriliyor..." if auto_detect else "Metin yapay zeka ile iyileştiriliyor..."
+    show_notification("İşleniyor...", status_msg, color='#9b59b6')
+    improved = improve_text(text, auto_detect=auto_detect)
     
     if improved and not improved.startswith("Hata:"):
         pyperclip.copy(improved)
-        show_notification("Yazı İyileştirildi!", improved, color='#9b59b6')
+        success_title = "Dilde İyileştirildi!" if auto_detect else "Yazı İyileştirildi!"
+        show_notification(success_title, improved, color='#9b59b6')
     else:
         show_notification("İşlem Başarısız", improved, color='#e74c3c')
 
@@ -290,8 +296,10 @@ def process_action():
     
     if current_clicks == 2:
         handle_fix_clipboard()
-    elif current_clicks >= 3:
-        handle_improve_clipboard()
+    elif current_clicks == 3:
+        handle_improve_clipboard(auto_detect=False)
+    elif current_clicks >= 4:
+        handle_improve_clipboard(auto_detect=True)
 
 def on_hotkey_pressed():
     global click_count, timer, last_click_time
@@ -320,11 +328,13 @@ def setup_tray():
         pystray.MenuItem("İmla Düzeltici Durumu", lambda: None, enabled=False),
         pystray.MenuItem("---", lambda: None, enabled=False),
         pystray.MenuItem("Panoyu Düzelt (Karakter)", handle_fix_clipboard),
-        pystray.MenuItem("Panoyu İyileştir (Yapay Zeka)", handle_improve_clipboard),
+        pystray.MenuItem("Panoyu İyileştir (Türkçe)", lambda: handle_improve_clipboard(auto_detect=False)),
+        pystray.MenuItem("Panoyu İyileştir (Kendi Dili)", lambda: handle_improve_clipboard(auto_detect=True)),
         pystray.MenuItem("---", lambda: None, enabled=False),
         pystray.MenuItem(f"Kısayol: {settings['hotkey'].upper()}", lambda: None, enabled=False),
         pystray.MenuItem(f"  2x {settings['hotkey'].upper()}: Karakter", lambda: None, enabled=False),
-        pystray.MenuItem(f"  3x {settings['hotkey'].upper()}: İyileştir", lambda: None, enabled=False),
+        pystray.MenuItem(f"  3x {settings['hotkey'].upper()}: Türkçe İyileştir", lambda: None, enabled=False),
+        pystray.MenuItem(f"  4x {settings['hotkey'].upper()}: Dilde İyileştir", lambda: None, enabled=False),
         pystray.MenuItem("---", lambda: None, enabled=False),
         pystray.MenuItem("Çıkış", quit_app)
     )
@@ -353,7 +363,7 @@ if __name__ == "__main__":
     threading.Thread(target=start_listener, daemon=True).start()
 
     # Initial notification and library health check
-    msg = f"Uygulama hazır!\n2x {settings['hotkey'].upper()}: Düzelt\n3x {settings['hotkey'].upper()}: İyileştir"
+    msg = f"Uygulama hazır!\n2x {settings['hotkey'].upper()}: Karakter\n3x {settings['hotkey'].upper()}: Türkçe İyileştir\n4x {settings['hotkey'].upper()}: Kendi Dilinde"
     if not check_lib_health():
         msg += "\n\n⚠️ KRİTİK: Dil kütüphanesi yüklenemedi!"
         show_notification("İmla Düzeltici v2.2 - HATA", msg, color='#e67e22')
