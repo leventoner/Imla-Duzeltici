@@ -11,8 +11,34 @@ from PIL import Image
 import tkinter as tk
 from dotenv import load_dotenv
 
+# Helper functions for paths
+def resource_path(relative_path):
+    """ Get absolute path to internal bundled resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+def get_external_path(relative_path):
+    """ Get absolute path to file in the same directory as the executable """
+    if getattr(sys, 'frozen', False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 # Load environment variables
-load_dotenv()
+# 1. Load from bundled .env (Internal default)
+internal_env = resource_path(".env")
+if os.path.exists(internal_env):
+    load_dotenv(internal_env)
+
+# 2. Load from external .env (User override)
+external_env = get_external_path(".env")
+if os.path.exists(external_env):
+    load_dotenv(external_env, override=True)
 
 # Settings logic
 DEFAULT_SETTINGS = {
@@ -22,9 +48,16 @@ DEFAULT_SETTINGS = {
 }
 
 def load_settings():
+    # Try external settings first (user modifiable)
+    settings_path = get_external_path("settings.json")
+    
+    # If external doesn't exist, try internal bundled default
+    if not os.path.exists(settings_path):
+        settings_path = resource_path("settings.json")
+        
     try:
-        if os.path.exists("settings.json"):
-            with open("settings.json", "r", encoding="utf-8") as f:
+        if os.path.exists(settings_path):
+            with open(settings_path, "r", encoding="utf-8") as f:
                 return {**DEFAULT_SETTINGS, **json.load(f)}
     except Exception as e:
         print(f"Error loading settings: {e}")
@@ -76,13 +109,7 @@ def initialize_gemini():
 
 model = initialize_gemini()
 
-def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+# The resource_path and get_external_path functions are moved to the top
 
 class NotificationOverlay:
     def __init__(self, title, message, color='#3498db'):
