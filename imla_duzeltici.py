@@ -9,6 +9,16 @@ from mintlemon import Normalizer
 import pystray
 from PIL import Image
 import tkinter as tk
+import ctypes
+from ctypes import wintypes
+from math import hypot
+try:
+    from pynput import mouse, keyboard as pynput_keyboard
+    HAS_PYNPUT = True
+except ImportError:
+    mouse = None
+    pynput_keyboard = None
+    HAS_PYNPUT = False
 from dotenv import load_dotenv
 
 # Helper functions for paths
@@ -44,7 +54,8 @@ if os.path.exists(external_env):
 DEFAULT_SETTINGS = {
     "hotkey": "ctrl+c",
     "cooldown": 0.5,
-    "notify_on_no_change": True
+    "notify_on_no_change": True,
+    "floating_icon": True
 }
 
 def load_settings():
@@ -72,6 +83,7 @@ COOLDOWN = settings["cooldown"]
 is_running = True
 processing_lock = threading.Lock()
 timer = None
+ignore_hotkeys = False
 
 # Gemini configuration
 import google.generativeai as genai
@@ -111,18 +123,30 @@ model = initialize_gemini()
 
 # The resource_path and get_external_path functions are moved to the top
 
+# Global UI Thread for Notifications and Menus
+ui_root = None
+ui_ready = threading.Event()
+
+def run_ui_thread():
+    global ui_root
+    ui_root = tk.Tk()
+    ui_root.withdraw()
+    ui_ready.set()
+    ui_root.mainloop()
+
+threading.Thread(target=run_ui_thread, daemon=True).start()
+ui_ready.wait()
+
 class NotificationOverlay:
     def __init__(self, title, message, color='#3498db'):
         self.title = title
         self.message = message
         self.color = color
-        threading.Thread(target=self._run, daemon=True).start()
+        # Call UI creation in the main UI thread
+        ui_root.after(0, self._create_overlay)
 
-    def _run(self):
-        root = tk.Tk()
-        root.withdraw()
-        
-        overlay = tk.Toplevel(root)
+    def _create_overlay(self):
+        overlay = tk.Toplevel(ui_root)
         overlay.overrideredirect(True)
         overlay.attributes("-topmost", True)
         overlay.attributes("-alpha", 0.0)
@@ -150,17 +174,241 @@ class NotificationOverlay:
         overlay.geometry(f"+{x}+{y}")
 
         def fade_in():
-            alpha = overlay.attributes("-alpha")
-            if alpha < 0.95:
-                overlay.attributes("-alpha", alpha + 0.1)
-                overlay.after(30, fade_in)
+            try:
+                alpha = overlay.attributes("-alpha")
+                if alpha < 0.95:
+                    overlay.attributes("-alpha", alpha + 0.1)
+                    overlay.after(30, fade_in)
+            except: pass
         
         fade_in()
-        overlay.after(4000, root.destroy)
-        root.mainloop()
+        
+        def close():
+            try:
+                overlay.destroy()
+            except: pass
+            
+        overlay.after(4000, close)
 
 def show_notification(title, message, color='#3498db'):
     NotificationOverlay(title, message, color)
+
+class FloatingMenu(tk.Toplevel):
+    def __init__(self, x, y, on_fix, on_tr, on_auto):
+        super().__init__(ui_root)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.attributes("-alpha", 0.0)
+        self.configure(bg='#2c3e50')
+        
+        # Geometry: Pill shaped for 3 items + tooltip space
+        width, height = 150, 62
+        self.geometry(f"{width}x{height}+{x+5}+{y-20}")
+        self.x_range = (x+5, x+5+width)
+        self.y_range = (y-20, y-20+height)
+        
+        self.canvas = tk.Canvas(self, width=width, height=height, bg='#2c3e50', highlightthickness=0)
+        self.canvas.pack()
+        
+        # Draw rounded background (pill shape at bottom)
+        self._draw_pill(self.canvas, width, 42, '#34495e', '#2c3e50', y_off=20)
+        
+        # Tooltip Label
+        self.tooltip = tk.Label(self, text="", fg='#3498db', bg='#2c3e50', font=('Segoe UI', 9, 'bold'))
+        self.tooltip.place(x=0, y=0, width=150)
+
+        # Buttons
+        def hover_eff(btn, color, text):
+            def on_enter(e):
+                btn.config(bg=color)
+                self.tooltip.config(text=text, fg=color)
+            def on_leave(e):
+                btn.config(bg='#34495e')
+                self.tooltip.config(text="")
+            btn.bind("<Enter>", on_enter)
+            btn.bind("<Leave>", on_leave)
+
+        # Labels as Buttons (to avoid focus theft entirely)
+        self.btn_fix = tk.Label(self, text="📝", font=('Segoe UI Emoji', 13), 
+                           bg='#34495e', fg='white', cursor='hand2')
+        self.btn_tr = tk.Label(self, text="🇹🇷", font=('Segoe UI Emoji', 12), 
+                           bg='#34495e', fg='white', cursor='hand2')
+        self.btn_auto = tk.Label(self, text="✨", font=('Segoe UI Emoji', 13), 
+                           bg='#34495e', fg='white', cursor='hand2')
+        
+        self.btn_fix.place(x=10, y=26, width=40, height=30)
+        self.btn_tr.place(x=55, y=26, width=40, height=30)
+        self.btn_auto.place(x=100, y=26, width=40, height=30)
+        
+        # Helper to bind hover and click
+        def bind_events(lbl, color, text, command):
+            def on_enter(e):
+                lbl.config(bg=color)
+                self.tooltip.config(text=text, fg=color)
+            def on_leave(e):
+                lbl.config(bg='#34495e')
+                self.tooltip.config(text="")
+            def on_click(e):
+                command()
+                
+            lbl.bind("<Enter>", on_enter)
+            lbl.bind("<Leave>", on_leave)
+            lbl.bind("<Button-1>", on_click)
+
+        bind_events(self.btn_fix, '#2ecc71', "Karakter Düzelt", on_fix)
+        bind_events(self.btn_tr, '#3498db', "Türkçe İyileştir", on_tr)
+        bind_events(self.btn_auto, '#9b59b6', "Orijinal Dilde", on_auto)
+        
+        self.after(100, self.fade_in)
+        
+        # Windows-specific: Make the window not take focus when clicked (preserving selection)
+        self.after(100, self._make_no_activate)
+
+    def _make_no_activate(self):
+        # Constants for Windows API
+        GWL_EXSTYLE = -20
+        WS_EX_NOACTIVATE = 0x08000000
+        WS_EX_TOPMOST = 0x00000008
+        WS_EX_TOOLWINDOW = 0x00000080
+        
+        try:
+            # winfo_id() is the correct handle for Toplevel
+            hwnd = self.winfo_id()
+            current_style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, current_style | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW)
+        except Exception as e:
+            print(f"Error setting no-activate style: {e}")
+
+    def _draw_pill(self, canvas, w, h, color, shadow, y_off=0):
+        r = h // 2
+        canvas.create_oval(2, y_off+2, h-2, y_off+h-2, fill=color, outline=color)
+        canvas.create_oval(w-h+2, y_off+2, w-2, y_off+h-2, fill=color, outline=color)
+        canvas.create_rectangle(r, y_off+2, w-r, y_off+h-2, fill=color, outline=color)
+
+    def fade_in(self):
+        try:
+            alpha = self.attributes("-alpha")
+            if alpha < 0.98:
+                self.attributes("-alpha", alpha + 0.15)
+                self.after(20, self.fade_in)
+        except: pass
+
+    def destroy_with_fade(self):
+        try:
+            alpha = self.attributes("-alpha")
+            if alpha > 0.1:
+                self.attributes("-alpha", alpha - 0.15)
+                self.after(20, self.destroy_with_fade)
+            else:
+                self.destroy()
+        except:
+            pass
+
+    def is_inside(self, x, y):
+        try:
+            return (self.x_range[0] <= x <= self.x_range[1] and 
+                    self.y_range[0] <= y <= self.y_range[1])
+        except: return False
+
+class MouseTracker:
+    def __init__(self, settings, fix_callback, improve_callback):
+        self.settings = settings
+        self.fix_callback = fix_callback
+        self.improve_callback = improve_callback
+        self.start_pos = (0, 0)
+        self.active_menu = None
+        self.listener = None
+
+    def on_click(self, x, y, button, pressed):
+        if not HAS_PYNPUT or not self.settings.get("floating_icon", True):
+            return
+            
+        if pressed:
+            if self.active_menu:
+                if not self.active_menu.is_inside(x, y):
+                    ui_root.after(0, self.active_menu.destroy_with_fade)
+                    self.active_menu = None
+            self.start_pos = (x, y)
+        else:
+            dist = hypot(x - self.start_pos[0], y - self.start_pos[1])
+            if dist > 20: 
+                # Check for I-Beam cursor to be sure it's a text selection
+                class CURSORINFO(ctypes.Structure):
+                    _fields_ = [("cbSize", ctypes.c_ulong), ("flags", ctypes.c_ulong), ("hCursor", ctypes.c_void_p), ("pt", ctypes.c_long * 2)]
+                ci = CURSORINFO()
+                ci.cbSize = ctypes.sizeof(CURSORINFO)
+                ctypes.windll.user32.GetCursorInfo(ctypes.byref(ci))
+                
+                # h_ibeam = 65541 or similar, but checking if it's non-standard is enough often
+                # For now, distance check + a tiny bit of verification
+                time.sleep(0.05)
+                self.show_menu(x, y)
+
+    def show_menu(self, x, y):
+        # We must create UI in the UI thread
+        ui_root.after(0, lambda: self._create_menu(x, y))
+
+    def _create_menu(self, x, y):
+        # Destroy existing menu
+        if self.active_menu:
+            try: self.active_menu.destroy()
+            except: pass
+            
+        def trigger_fix():
+            self._copy_and_run(self.fix_callback)
+
+        def trigger_tr():
+            self._copy_and_run(lambda: handle_improve_clipboard(auto_detect=False))
+
+        def trigger_auto():
+            self._copy_and_run(self.improve_callback)
+
+        self.active_menu = FloatingMenu(x, y, trigger_fix, trigger_tr, trigger_auto)
+
+    def _copy_and_run(self, callback):
+        global ignore_hotkeys
+        if self.active_menu:
+            ui_root.after(0, self.active_menu.destroy)
+            self.active_menu = None
+            
+        def worker():
+            global ignore_hotkeys
+            time.sleep(0.2)
+            ignore_hotkeys = True
+            
+            try:
+                # Clear clipboard first to detect fresh copy
+                try: pyperclip.copy("")
+                except: pass
+                
+                # Try to copy multiple times if needed (some apps are slow)
+                for _ in range(3):
+                    keyboard.press_and_release('ctrl+c')
+                    # Wait and check
+                    for _ in range(5):
+                        time.sleep(0.1)
+                        try:
+                            if pyperclip.paste().strip():
+                                break
+                        except: pass
+                    if pyperclip.paste().strip(): break
+                
+                callback()
+            finally:
+                time.sleep(0.5)
+                ignore_hotkeys = False
+            
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start(self):
+        if not HAS_PYNPUT:
+            print("pynput not available, floating icon disabled.")
+            return
+        try:
+            self.listener = mouse.Listener(on_click=self.on_click)
+            self.listener.start()
+        except Exception as e:
+            print(f"Mouse listener error: {e}")
 
 def check_lib_health():
     try:
@@ -202,18 +450,18 @@ def deasciify_text(text):
         
         # Simplest: if word by word changed something that full text didn't, or vice-versa
         # Let's just return the most 'turkish' looking one (more non-ascii chars)
+        # Reconstruct with original spacing for comparison
+        reconstructed = text
+        for i, w in enumerate(words):
+            cw = corrected_words[i]
+            if cw != w:
+                reconstructed = reconstructed.replace(w, cw, 1)
+
         def count_turkish(s):
             return sum(1 for c in s if c in "çğıöşüÇĞİÖŞÜ")
             
-        if count_turkish(corrected) < count_turkish(' '.join(corrected_words)):
-            # Reconstruct with original spacing is hard with simple split, 
-            # but let's try a better approach:
-            new_text = text
-            for i, w in enumerate(words):
-                cw = corrected_words[i]
-                if cw != w:
-                    new_text = new_text.replace(w, cw, 1)
-            corrected = new_text
+        if count_turkish(corrected) < count_turkish(reconstructed):
+            corrected = reconstructed
 
         return corrected
     except Exception as e:
@@ -276,9 +524,11 @@ def handle_fix_clipboard():
         pyperclip.copy(corrected)
         show_notification("Karakterler Düzeltildi!", corrected, color='#2ecc71')
     else:
-        if settings.get("notify_on_no_change", True):
-            # Double check: maybe it's the case where Normalizer failed to load inside EXE
-            show_notification("Düzeltme Gerekmedi", "Metin zaten düzgün görünüyor.", color='#3498db')
+        # Check if library is actually alive
+        if not check_lib_health():
+             show_notification("Kritik Hata", "Dil kütüphanesi (Normalizer) çalışmıyor. Lütfen uygulamayı yönetici olarak başlatmayı veya yeniden kurmayı deneyin.", color='#e67e22')
+        elif settings.get("notify_on_no_change", True):
+            show_notification("Düzeltme Gerekmedi", "Metin zaten düzgün görünüyor veya düzeltilecek karakter bulunamadı.", color='#3498db')
 
 def handle_improve_clipboard(auto_detect=False):
     # If hotkey is ctrl+c, we don't send it again
@@ -330,7 +580,7 @@ def process_action():
 
 def on_hotkey_pressed():
     global click_count, timer, last_click_time
-    if not is_running: return
+    if not is_running or ignore_hotkeys: return
         
     current_time = time.time()
     if current_time - last_click_time < COOLDOWN:
@@ -349,6 +599,16 @@ def quit_app(icon, item):
     icon.stop()
     os._exit(0)
 
+def toggle_setting(key):
+    settings[key] = not settings.get(key, True)
+    # Save to external settings
+    settings_path = get_external_path("settings.json")
+    try:
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4)
+    except Exception as e:
+        print(f"Error saving settings: {e}")
+
 def setup_tray():
     image = Image.open(resource_path("icon.png"))
     menu = pystray.Menu(
@@ -357,6 +617,11 @@ def setup_tray():
         pystray.MenuItem("Panoyu Düzelt (Karakter)", handle_fix_clipboard),
         pystray.MenuItem("Panoyu İyileştir (Türkçe)", lambda: handle_improve_clipboard(auto_detect=False)),
         pystray.MenuItem("Panoyu İyileştir (Kendi Dili)", lambda: handle_improve_clipboard(auto_detect=True)),
+        pystray.MenuItem("---", lambda: None, enabled=False),
+        pystray.MenuItem("Seçim İkonunu Göster" + ("" if HAS_PYNPUT else " (Kütüphane Eksik)"), 
+                         lambda icon, item: toggle_setting("floating_icon"),
+                         checked=lambda item: settings.get("floating_icon", True),
+                         enabled=HAS_PYNPUT),
         pystray.MenuItem("---", lambda: None, enabled=False),
         pystray.MenuItem(f"Kısayol: {settings['hotkey'].upper()}", lambda: None, enabled=False),
         pystray.MenuItem(f"  2x {settings['hotkey'].upper()}: Karakter", lambda: None, enabled=False),
@@ -388,6 +653,10 @@ if __name__ == "__main__":
 
     # Start keyboard listener
     threading.Thread(target=start_listener, daemon=True).start()
+
+    # Start mouse listener for floating icon
+    mouse_tracker = MouseTracker(settings, handle_fix_clipboard, lambda: handle_improve_clipboard(auto_detect=True))
+    mouse_tracker.start()
 
     # Initial notification and library health check
     msg = f"Uygulama hazır!\n2x {settings['hotkey'].upper()}: Karakter\n3x {settings['hotkey'].upper()}: Türkçe İyileştir\n4x {settings['hotkey'].upper()}: Kendi Dilinde"
